@@ -18,6 +18,7 @@ class IndexRowCreate(BaseModel):
 class IndexRowUpdate(BaseModel):
     sl_no: Optional[str] = Field(None, max_length=20)
     particulars: Optional[str] = Field(None, min_length=1, max_length=500)
+    description: Optional[str] = Field(None, max_length=1000)
     page_start_part1: Optional[int] = None
     page_end_part1: Optional[int] = None
     page_start_part2: Optional[int] = None

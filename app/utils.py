@@ -1,6 +1,7 @@
 import unicodedata
 import re
 from urllib.parse import urlparse, urlunparse, quote
+from app.constants import UPLOAD_TIMESTAMP_REGEX
 
 
 def normalize_supabase_storage_key(text: str) -> str:
@@ -37,3 +38,14 @@ def encode_url_path(url: str) -> str:
         )
     )
     return encoded_url
+
+
+def remove_timestamp_from_storage_filename(filename: str) -> str:
+    """
+    Input: test_2025-12-01T04-07-03-485626-00-00.pdf
+    Output: test.pdf
+    """
+    match = re.match(UPLOAD_TIMESTAMP_REGEX, filename)
+    if match:
+        return f"{match.group(1)}{match.group(2)}"
+    return filename

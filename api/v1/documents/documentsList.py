@@ -1,12 +1,13 @@
 import io
 import os
+from io import BytesIO
 from datetime import datetime, timezone
 from fastapi import APIRouter, Depends, HTTPException, Request
 from pypdf import PdfReader, PdfWriter
 from app.constants import VALID_FILE_FORMATS
-from app.utils import normalize_supabase_storage_key, encode_url_path
+from app.utils import normalize_supabase_storage_key, encode_url_path, remove_timestamp_from_storage_filename
 from app.schemas.requests import (
-    DocumentCreate, DocumentUpdate, DocumentAssignSection,
+    DocumentCreate, DocumentUpdate, DocumentAssignSection, DeletePagesRequest,
     DocumentReorder, DocumentSplitRequest, CommitDocumentUpload,
 )
 from core.config import config
@@ -18,108 +19,11 @@ from core.responseTypes import Success, NotFound, BadRequest
 
 router = APIRouter()
 
-# ---------------------------------------------------------------------------
-# MOCK DATA
-# ---------------------------------------------------------------------------
-
-MOCK_DOCUMENT = {
-    "id": "pbd-001",
-    "paper_book_id": "pb-001",
-    "doc_id": "doc-001",
-    "section_id": "sec-001",
-    "order_index": 1,
-    "is_split_child": False,
-    "parent_document_id": None,
-    "split_page_start": None,
-    "split_page_end": None,
-    "created_at": "2025-01-01T00:00:00+00:00",
-    "updated_at": "2025-01-01T00:00:00+00:00",
-}
-
-MOCK_DOCUMENTS_LIST = [
-    {
-        "id": "pbd-001",
-        "paper_book_id": "pb-001",
-        "doc_id": "doc-001",
-        "section_id": "sec-001",
-        "order_index": 1,
-        "is_split_child": False,
-        "parent_document_id": None,
-        "split_page_start": None,
-        "split_page_end": None,
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "updated_at": "2025-01-01T00:00:00+00:00",
-    },
-    {
-        "id": "pbd-002",
-        "paper_book_id": "pb-001",
-        "doc_id": "doc-002",
-        "section_id": "sec-001",
-        "order_index": 2,
-        "is_split_child": False,
-        "parent_document_id": None,
-        "split_page_start": None,
-        "split_page_end": None,
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "updated_at": "2025-01-01T00:00:00+00:00",
-    },
-    {
-        "id": "pbd-003",
-        "paper_book_id": "pb-001",
-        "doc_id": "doc-003",
-        "section_id": "sec-002",
-        "order_index": 1,
-        "is_split_child": False,
-        "parent_document_id": None,
-        "split_page_start": None,
-        "split_page_end": None,
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "updated_at": "2025-01-01T00:00:00+00:00",
-    },
-]
-
-MOCK_SPLIT_DOCUMENTS = [
-    {
-        "id": "pbd-004",
-        "paper_book_id": "pb-001",
-        "doc_id": "doc-004",
-        "section_id": "sec-001",
-        "order_index": 1,
-        "is_split_child": True,
-        "parent_document_id": "pbd-001",
-        "split_page_start": 1,
-        "split_page_end": 5,
-        "storage_path": "paperbook-documents/doc-001_part1.pdf",
-        "uploaded_filename": "doc-001_part1.pdf",
-        "file_size": 102400,
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "updated_at": "2025-01-01T00:00:00+00:00",
-    },
-    {
-        "id": "pbd-005",
-        "paper_book_id": "pb-001",
-        "doc_id": "doc-005",
-        "section_id": "sec-001",
-        "order_index": 2,
-        "is_split_child": True,
-        "parent_document_id": "pbd-001",
-        "split_page_start": 6,
-        "split_page_end": 12,
-        "storage_path": "paperbook-documents/doc-001_part2.pdf",
-        "uploaded_filename": "doc-001_part2.pdf",
-        "file_size": 143360,
-        "created_at": "2025-01-01T00:00:00+00:00",
-        "updated_at": "2025-01-01T00:00:00+00:00",
-    },
-]
-
-# ---------------------------------------------------------------------------
-
 
 async def upload_pdf_to_storage(supabase, storage_path: str, pdf_bytes: bytes) -> str:
     """Upload PDF bytes to Supabase storage, return the path."""
     try:
-        await supabase.storage.from_(config.SUPABASE_STORAGE_BUCKET).upload(
+        await supabase.storage.from_(config.SUPABASE_PREFILING_STORAGE_BUCKET).upload(
             path=storage_path,
             file=pdf_bytes,
             file_options={"content-type": "application/pdf", "upsert": "true"},
@@ -131,7 +35,7 @@ async def upload_pdf_to_storage(supabase, storage_path: str, pdf_bytes: bytes) -
 
 async def delete_from_storage(supabase, storage_path: str):
     try:
-        await supabase.storage.from_(config.SUPABASE_STORAGE_BUCKET).remove([storage_path])
+        await supabase.storage.from_(config.SUPABASE_PREFILING_STORAGE_BUCKET).remove([storage_path])
     except Exception:
         pass
 
@@ -146,17 +50,6 @@ async def create_document_record(
     FE uploads file directly to Supabase storage,
     then calls this endpoint with the doc_id to create the DB record.
     """
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    mock_created = {
-        **MOCK_DOCUMENT,
-        "paper_book_id": paper_book_id,
-        "doc_id": payload.doc_id,
-        "section_id": payload.section_id,
-        "order_index": payload.order_index if payload.order_index is not None else 1,
-    }
-    return Success(data={"document": [mock_created]}, message="Document record created successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
-
     supabase = await get_supabase_client(request.state.token)
     res = (
         await supabase.table("paper_books")
@@ -208,10 +101,6 @@ async def list_documents(
     request: Request,
     paper_book_id: str,
 ):
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    return Success(data={"documents": MOCK_DOCUMENTS_LIST}, message="Documents retrieved successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
-
     supabase = await get_supabase_client(request.state.token)
     res = (
         await supabase.table("paper_books")
@@ -241,16 +130,6 @@ async def get_upload_url(
     paper_book_id: str,
     filename: str,
 ):
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    response = {
-        "upload_url": "encoded_signed_url",
-        "file_path": "file_path",
-        "upload_token": "upload_token",
-        "paper_book_id": paper_book_id,
-    }
-    return Success(data=response, message="Upload URL generated successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
-
     supabase = await get_supabase_client(request.state.token)
     res = (
         await supabase.table("paper_books")
@@ -304,7 +183,7 @@ async def get_upload_url(
 
     response = {
         "upload_url": encoded_signed_url,
-        "file_path": file_path,
+        "file_path": storage_path,
         "upload_token": upload_token,
         "paper_book_id": paper_book_id,
     }
@@ -322,102 +201,87 @@ async def commit_uploaded_document(
     After FE uploads file to Supabase storage using the signed URL,
     it calls this endpoint to create the DB record for the uploaded document.
     """
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    mock_created = {
-        "paper_book_id": paper_book_id,
-        "doc_id": "doc-101",
+    supabase = await get_supabase_client(request.state.token)
+
+    file_name = remove_timestamp_from_storage_filename(
+        payload.file_path.split("/")[-1]
+    )
+
+    file_path = payload.file_path
+
+    # Remove bucket prefix if present (e.g., 'paper-books/')
+    if payload.file_path.startswith(
+        f"{config.SUPABASE_PREFILING_STORAGE_BUCKET}/"
+    ):
+        file_path = payload.file_path[
+            len(f"{config.SUPABASE_PREFILING_STORAGE_BUCKET}/") :
+        ]
+
+    bucket = supabase.storage.from_(
+        config.SUPABASE_PREFILING_STORAGE_BUCKET
+    )
+
+    file_exists = await bucket.exists(path=file_path)
+    if not file_exists:
+        return NotFound(message="Uploaded file not found in storage")
+
+    file_response = await bucket.download(path=file_path)
+    if not file_response:
+        return NotFound(
+            message="Failed to retrieve uploaded file from storage"
+        )
+
+    title = file_name
+    uploaded_filename = file_path.split("/")[-1]
+
+    page_count = None
+    if uploaded_filename.lower().endswith(".pdf"):
+        try:
+            pdf_reader = PdfReader(BytesIO(file_response))
+            page_count = len(pdf_reader.pages)
+        except Exception:
+            page_count = None
+
+    # Insert document record into database
+    document_data = {
+        "user_id": request.state.sub,
+        "title": title,
+        "uploaded_filename": uploaded_filename,
+        "storage_path": file_path,
+        "file_size": len(file_response),
+        "page_count": page_count,
     }
-    return Success(data={"document": [mock_created]}, message="Uploaded document committed successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
 
-@router.patch("/{doc_id}/", dependencies=[Depends(AuthenticationRequired)])
-async def update_document(
-    request: Request,
-    paper_book_id: str,
-    doc_id: str,
-    payload: DocumentUpdate,
-):
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    update_fields = payload.model_dump(exclude_none=True)
-    mock_updated = {**MOCK_DOCUMENT, "id": doc_id, "paper_book_id": paper_book_id, **update_fields}
-    return Success(data={"document": [mock_updated]}, message="Document updated successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
+    doc_insert_response = (
+        await supabase.table("paper_book_files")
+        .insert(document_data)
+        .execute()
+    )
 
-    supabase = await get_supabase_client(request.state.token)
-    res = (
-        await supabase.table("paper_books")
-        .select("id")
+    paper_book_doc_response = (
+        await supabase.table("paper_book_documents")
+        .insert(
+            {
+                "paper_book_id": paper_book_id,
+                "doc_id": doc_insert_response.data[0]["id"],
+                "is_split_child": False,
+            }
+        )
+        .execute()
+    )
+
+    await (
+        supabase.table("paper_books")
+        .update({"status": "documents_uploaded"})
         .eq("id", paper_book_id)
-        .eq("user_id", request.state.sub)
+        .eq("status", "draft")
         .execute()
     )
-    if not res.data:
-        raise NotFound(message="Paper book not found")
 
-    res = (
-        await supabase.table("paper_book_documents")
-        .select("*")
-        .eq("id", doc_id)
-        .eq("paper_book_id", paper_book_id)
-        .execute()
+    return Success(
+        data={"document": paper_book_doc_response.data},
+        message="Uploaded document committed successfully",
     )
-    if not res.data:
-        raise NotFound(message="Document not found")
-
-    update_data = payload.model_dump(exclude_none=True)
-
-    res = (
-        await supabase.table("paper_book_documents")
-        .update(update_data)
-        .eq("id", doc_id)
-        .eq("paper_book_id", paper_book_id)
-        .execute()
-    )
-    response = {"document": res.data}
-    return Success(data=response, message="Document updated successfully")
-
-
-@router.delete("/{doc_id}/", dependencies=[Depends(AuthenticationRequired)])
-async def delete_document(
-    request: Request,
-    paper_book_id: str,
-    doc_id: str,
-):
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    return Success(data={}, message="Document deleted successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
-
-    supabase = await get_supabase_client(request.state.token)
-    res = (
-        await supabase.table("paper_books")
-        .select("id")
-        .eq("id", paper_book_id)
-        .eq("user_id", request.state.sub)
-        .execute()
-    )
-    if not res.data:
-        raise NotFound(message="Paper book not found")
-
-    res = (
-        await supabase.table("paper_book_documents")
-        .select("*")
-        .eq("id", doc_id)
-        .eq("paper_book_id", paper_book_id)
-        .execute()
-    )
-    if not res.data:
-        raise NotFound(message="Document not found")
-
-    doc = res.data[0]
-
-    # Delete from storage
-    await delete_from_storage(supabase, doc["storage_path"])
-
-    await supabase.table("paper_book_documents").delete().eq("id", doc_id).execute()
-
-    response = {}
-    return Success(data=response, message="Document deleted successfully")
-
 
 @router.patch("/reorder/", dependencies=[Depends(AuthenticationRequired)])
 async def reorder_documents(
@@ -425,10 +289,6 @@ async def reorder_documents(
     paper_book_id: str,
     payload: DocumentReorder,
 ):
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    return Success(data={}, message="Documents reordered successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
-
     supabase = await get_supabase_client(request.state.token)
     res = (
         await supabase.table("paper_books")
@@ -453,6 +313,74 @@ async def reorder_documents(
     return Success(data=response, message="Documents reordered successfully")
 
 
+@router.patch("/{doc_id}/", dependencies=[Depends(AuthenticationRequired)])
+async def update_document(
+    request: Request,
+    paper_book_id: str,
+    doc_id: str,
+    payload: DocumentUpdate,
+):
+    supabase = await get_supabase_client(request.state.token)
+    res = (
+        await supabase.table("paper_books")
+        .select("id")
+        .eq("id", paper_book_id)
+        .eq("user_id", request.state.sub)
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Paper book not found")
+
+    update_data = payload.model_dump(exclude_none=True)
+
+    res = (
+        await supabase.table("paper_book_files")
+        .update(update_data)
+        .eq("id", doc_id)
+        .execute()
+    )
+    response = {"document": res.data}
+    return Success(data=response, message="Document updated successfully")
+
+
+@router.delete("/{doc_id}/", dependencies=[Depends(AuthenticationRequired)])
+async def delete_document(
+    request: Request,
+    paper_book_id: str,
+    doc_id: str,
+):
+    supabase = await get_supabase_client(request.state.token)
+    res = (
+        await supabase.table("paper_books")
+        .select("id")
+        .eq("id", paper_book_id)
+        .eq("user_id", request.state.sub)
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Paper book not found")
+
+    res = (
+        await supabase.table("paper_book_files")
+        .select("*")
+        .eq("id", doc_id)
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Document not found")
+
+    doc = res.data[0]
+
+    # Delete from storage
+    await delete_from_storage(supabase, doc["storage_path"])
+
+    await supabase.table("paper_book_files").delete().eq("id", doc_id).execute()
+
+    response = {}
+    return Success(data=response, message="Document deleted successfully")
+
+
+
 @router.patch("/{doc_id}/assign-section/", dependencies=[Depends(AuthenticationRequired)])
 async def assign_section(
     request: Request,
@@ -460,17 +388,6 @@ async def assign_section(
     doc_id: str,
     payload: DocumentAssignSection,
 ):
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    mock_assigned = {
-        **MOCK_DOCUMENT,
-        "id": doc_id,
-        "paper_book_id": paper_book_id,
-        "section_id": payload.section_id,
-        "order_index": payload.order_index if payload.order_index is not None else 1,
-    }
-    return Success(data={"document": [mock_assigned]}, message="Document assigned to section successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
-
     supabase = await get_supabase_client(request.state.token)
 
     res = (
@@ -535,22 +452,6 @@ async def split_document(
     The original document is replaced by the split parts.
     Pages not included in any range are discarded.
     """
-    # ── MOCK ────────────────────────────────────────────────────────────────
-    mock_splits = [
-        {
-            **MOCK_SPLIT_DOCUMENTS[idx % len(MOCK_SPLIT_DOCUMENTS)],
-            "parent_document_id": doc_id,
-            "paper_book_id": paper_book_id,
-            "split_page_start": r.start,
-            "split_page_end": r.end,
-            "uploaded_filename": r.filename if r.filename else f"document_part{idx + 1}.pdf",
-            "order_index": idx + 1,
-        }
-        for idx, r in enumerate(payload.ranges)
-    ]
-    return Success(data={"created_documents": mock_splits}, message="Document split successfully")
-    # ── END MOCK ─────────────────────────────────────────────────────────────
-
     supabase = await get_supabase_client(request.state.token)
 
     # Verify paper book ownership
@@ -568,28 +469,26 @@ async def split_document(
     pbd_res = (
         await supabase.table("paper_book_documents")
         .select("*")
-        .eq("id", doc_id)
+        .eq("doc_id", doc_id)
         .eq("paper_book_id", paper_book_id)
-        .single()
         .execute()
     )
     if not pbd_res.data:
         raise NotFound(message="Document not found")
 
-    pbd = pbd_res.data  # paper_book_documents row
+    pbd = pbd_res.data[0]  # paper_book_documents row
 
     # Fetch the actual document from paper_book_files table using doc_id FK
     doc_res = (
         await supabase.table("paper_book_files")
         .select("id, storage_path, uploaded_filename, file_size")
-        .eq("doc_id", pbd["doc_id"])
-        .single()
+        .eq("id", pbd["doc_id"])
         .execute()
     )
     if not doc_res.data:
         raise NotFound(message="Source document record not found")
 
-    original_doc = doc_res.data  # paper_book_files row
+    original_doc = doc_res.data[0]  # paper_book_files row
 
     # Validate ranges
     for r in payload.ranges:
@@ -600,7 +499,7 @@ async def split_document(
             )
 
     # Download original PDF from storage
-    pdf_bytes = await supabase.storage.from_(config.SUPABASE_STORAGE_BUCKET).download(original_doc["storage_path"])
+    pdf_bytes = await supabase.storage.from_(config.SUPABASE_PREFILING_STORAGE_BUCKET).download(original_doc["storage_path"])
 
     reader = PdfReader(io.BytesIO(pdf_bytes))
     total_pages = len(reader.pages)
@@ -662,7 +561,7 @@ async def split_document(
             .insert({
                 "paper_book_id": paper_book_id,
                 "section_id": pbd["section_id"],
-                "doc_id": new_doc["doc_id"],
+                "doc_id": new_doc["id"],
                 "order_index": pbd["order_index"] + idx,
                 "is_split_child": True,
                 "parent_document_id": pbd["id"],
@@ -689,3 +588,156 @@ async def split_document(
     await supabase.table("paper_book_documents").delete().eq("id", pbd["id"]).execute()
 
     return Success(data={"created_documents": created_docs}, message="Document split successfully")
+
+
+@router.get("/{doc_id}/url", dependencies=[Depends(AuthenticationRequired)])
+async def get_document_download_url(
+    request: Request,
+    paper_book_id: str,
+    doc_id: str,
+):
+    supabase = await get_supabase_client(request.state.token)
+    res = (
+        await supabase.table("paper_books")
+        .select("id")
+        .eq("id", paper_book_id)
+        .eq("user_id", request.state.sub)
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Paper book not found")
+
+    doc_res = (
+        await supabase.table("paper_book_files")
+        .select("storage_path")
+        .eq("id", doc_id)
+        .execute()
+    )
+    if not doc_res.data:
+        raise NotFound(message="Document not found")
+
+    storage_path = doc_res.data[0]["storage_path"]
+
+    download_url_response = await supabase.storage.from_(config.SUPABASE_PREFILING_STORAGE_BUCKET).create_signed_url(
+        path=storage_path,
+        expires_in=3600,
+    )
+
+    if not download_url_response or not download_url_response.get("signedUrl"):
+        logger.error(
+            f"Failed to generate signed download URL: {download_url_response}"
+        )
+        raise HTTPException(status_code=500, detail="Failed to generate download URL")
+
+    signed_download_url = download_url_response.get("signedUrl")
+    encoded_signed_download_url = encode_url_path(signed_download_url)
+
+    return Success(data={"download_url": encoded_signed_download_url}, message="Download URL generated successfully")
+
+@router.post("/{doc_id}/delete-pages/", dependencies=[Depends(AuthenticationRequired)])
+async def delete_pages(
+    request: Request,
+    paper_book_id: str,
+    doc_id: str,
+    payload: DeletePagesRequest,
+):
+    """
+    Delete specific pages from a document PDF.
+    - page_indices are 1-based
+    - Original file in storage is overwritten with the new PDF
+    - Update page_count in paper_book_files table
+    """
+    supabase = await get_supabase_client(request.state.token)
+
+    # Verify paper book ownership
+    pb_res = (
+        await supabase.table("paper_books")
+        .select("id")
+        .eq("id", paper_book_id)
+        .eq("user_id", request.state.sub)
+        .single()
+        .execute()
+    )
+    if not pb_res.data:
+        raise NotFound(message="Paper book not found")
+
+    # Fetch paper_book_documents record
+    pbd_res = (
+        await supabase.table("paper_book_documents")
+        .select("*")
+        .eq("id", doc_id)
+        .eq("paper_book_id", paper_book_id)
+        .single()
+        .execute()
+    )
+    if not pbd_res.data:
+        raise NotFound(message="Document not found")
+
+    pbd = pbd_res.data
+
+    # Fetch actual document from paper_book_files table
+    doc_res = (
+        await supabase.table("paper_book_files")
+        .select("id, storage_path, uploaded_filename, file_size")
+        .eq("id", pbd["doc_id"])
+        .single()
+        .execute()
+    )
+    if not doc_res.data:
+        raise NotFound(message="Source document record not found")
+
+    original_doc = doc_res.data
+
+    # Download PDF from storage
+    pdf_bytes = await supabase.storage.from_(
+        config.SUPABASE_PREFILING_STORAGE_BUCKET
+    ).download(original_doc["storage_path"])
+
+    reader = PdfReader(io.BytesIO(pdf_bytes))
+    total_pages = len(reader.pages)
+
+    # Validate page indices
+    invalid = [p for p in payload.page_indices if p < 1 or p > total_pages]
+    if invalid:
+        raise BadRequest(
+            message=f"Invalid page indices {invalid}. Document has {total_pages} pages (1-based).",
+        )
+
+    # Check that we're not deleting all pages
+    pages_to_delete = set(payload.page_indices)
+    if len(pages_to_delete) >= total_pages:
+        raise BadRequest(
+            message="Cannot delete all pages from a document.",
+        )
+
+    # Build new PDF excluding deleted pages
+    writer = PdfWriter()
+    for page_num in range(total_pages):
+        if (page_num + 1) not in pages_to_delete:  # convert to 1-based for comparison
+            writer.add_page(reader.pages[page_num])
+
+    buf = io.BytesIO()
+    writer.write(buf)
+    new_pdf_bytes = buf.getvalue()
+    remaining_pages = len(writer.pages)
+
+    # Overwrite the same file in storage
+    await supabase.storage.from_(config.SUPABASE_PREFILING_STORAGE_BUCKET).upload(
+        original_doc["storage_path"],
+        new_pdf_bytes,
+        file_options={"content-type": "application/pdf", "upsert": "true"},
+    )
+
+    # Update file_size and page_count in paper_book_files table
+    await supabase.table("paper_book_files").update(
+        {"file_size": len(new_pdf_bytes), "page_count": remaining_pages}
+    ).eq("id", original_doc["id"]).execute()
+
+    return Success(
+        data={
+            "doc_id": doc_id,
+            "pages_deleted": sorted(pages_to_delete),
+            "remaining_pages": remaining_pages,
+        },
+        message="Pages deleted successfully",
+    )

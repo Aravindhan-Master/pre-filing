@@ -6,6 +6,7 @@ from .documents import (
     DocumentAssignSection,
     DocumentReorder,
     DocumentSplitRequest,
+    DeletePagesRequest,
 )
 from .indexRows import IndexRowCreate, IndexRowUpdate, IndexReorder, IndexRowResponse
 from .paperBook import PaperBookCreate, PaperBookUpdate
@@ -22,6 +23,7 @@ __all__ = [
     "DocumentAssignSection",
     "DocumentReorder",
     "DocumentSplitRequest",
+    "DeletePagesRequest",
     "IndexRowCreate",
     "IndexRowUpdate",
     "IndexReorder",

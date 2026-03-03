@@ -15,8 +15,7 @@ class DocumentCreate(BaseModel):
 
 
 class DocumentUpdate(BaseModel):
-    original_filename: Optional[str] = Field(None, min_length=1, max_length=500)
-    section_id: Optional[str] = None
+    title: Optional[str] = Field(None, min_length=1, max_length=500)
 
 
 class DocumentAssignSection(BaseModel):
@@ -59,3 +58,11 @@ class DocumentResponse(BaseModel):
     split_page_end: Optional[int]
     uploaded_at: datetime
     updated_at: datetime
+
+
+class DeletePagesRequest(BaseModel):
+    page_indices: List[int] = Field(
+        ...,
+        min_length=1,
+        description="1-based page numbers to delete",
+    )
