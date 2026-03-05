@@ -165,7 +165,7 @@ async def get_index(
 
     res = (
         await supabase.table("paper_book_index_rows")
-        .select("*")
+        .select("*, paper_book_sections(id, paper_book_documents(id, paper_book_files(*)))")
         .eq("paper_book_id", paper_book_id)
         .order("order_index")
         .execute()
