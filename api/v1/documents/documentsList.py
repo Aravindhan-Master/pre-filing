@@ -116,7 +116,7 @@ async def list_documents(
     # fetch only the documents that are not assigned to any section
     res = (
         await supabase.table("paper_book_documents")
-        .select("*")
+        .select("*, paper_book_files(*)")
         .eq("paper_book_id", paper_book_id)
         .is_("section_id", r"null")
         .order("order_index")
@@ -442,6 +442,54 @@ async def assign_section(
 
     response = {"document": res.data}
     return Success(data=response, message="Document assigned to section successfully")
+
+
+@router.patch("/{doc_id}/remove-section/", dependencies=[Depends(AuthenticationRequired)])
+async def remove_section(
+    request: Request,
+    paper_book_id: str,
+    doc_id: str,
+):
+    supabase = await get_supabase_client(request.state.token)
+
+    # Verify paper book ownership
+    res = (
+        await supabase.table("paper_books")
+        .select("id")
+        .eq("id", paper_book_id)
+        .eq("user_id", request.state.sub)
+        .single()
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Paper book not found")
+
+    # Verify document exists
+    res = (
+        await supabase.table("paper_book_documents")
+        .select("*")
+        .eq("id", doc_id)
+        .eq("paper_book_id", paper_book_id)
+        .single()
+        .execute()
+    )
+    if not res.data:
+        raise NotFound(message="Document not found")
+
+    # Remove section assignment
+    res = (
+        await supabase.table("paper_book_documents")
+        .update({
+            "section_id": None,
+            "order_index": None
+        })
+        .eq("id", doc_id)
+        .eq("paper_book_id", paper_book_id)
+        .execute()
+    )
+
+    response = {"document": res.data}
+    return Success(data=response, message="Document removed from section successfully")
 
 
 @router.post("/{doc_id}/split/", dependencies=[Depends(AuthenticationRequired)])
