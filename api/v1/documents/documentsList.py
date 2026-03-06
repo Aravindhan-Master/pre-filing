@@ -714,32 +714,17 @@ async def delete_pages(
     if not pb_res.data:
         raise NotFound(message="Paper book not found")
 
-    # Fetch paper_book_documents record
-    pbd_res = (
-        await supabase.table("paper_book_documents")
-        .select("*")
-        .eq("id", doc_id)
-        .eq("paper_book_id", paper_book_id)
-        .single()
-        .execute()
-    )
-    if not pbd_res.data:
-        raise NotFound(message="Document not found")
-
-    pbd = pbd_res.data
-
     # Fetch actual document from paper_book_files table
     doc_res = (
         await supabase.table("paper_book_files")
         .select("id, storage_path, uploaded_filename, file_size")
-        .eq("id", pbd["doc_id"])
-        .single()
+        .eq("id", doc_id)
         .execute()
     )
     if not doc_res.data:
         raise NotFound(message="Source document record not found")
 
-    original_doc = doc_res.data
+    original_doc = doc_res.data[0]
 
     # Download PDF from storage
     pdf_bytes = await supabase.storage.from_(
