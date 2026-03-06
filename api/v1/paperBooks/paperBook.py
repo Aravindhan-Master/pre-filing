@@ -23,75 +23,151 @@ def build_index_pdf(paper_book: dict, index_rows: list) -> bytes:
     doc = SimpleDocTemplate(
         buf,
         pagesize=A4,
-        leftMargin=2 * cm,
-        rightMargin=2 * cm,
+        leftMargin=1.5 * cm,
+        rightMargin=1.5 * cm,
         topMargin=2 * cm,
         bottomMargin=2 * cm,
     )
 
     styles = getSampleStyleSheet()
-    title_style = ParagraphStyle(
-        "title", parent=styles["Heading1"], alignment=TA_CENTER, fontSize=13, spaceAfter=6
+
+    cell_style = ParagraphStyle(
+        "cell",
+        parent=styles["Normal"],
+        fontSize=8,
+        leading=11,
+        wordWrap="CJK",
     )
-    subtitle_style = ParagraphStyle(
-        "subtitle", parent=styles["Normal"], alignment=TA_CENTER, fontSize=10, spaceAfter=12
+    cell_bold_style = ParagraphStyle(
+        "cell_bold",
+        parent=styles["Normal"],
+        fontSize=8,
+        leading=11,
+        fontName="Helvetica-Bold",
+        wordWrap="CJK",
     )
-    cell_style = ParagraphStyle("cell", parent=styles["Normal"], fontSize=8, leading=10)
+    cell_center_style = ParagraphStyle(
+        "cell_center",
+        parent=styles["Normal"],
+        fontSize=8,
+        leading=11,
+        alignment=TA_CENTER,
+        wordWrap="CJK",
+    )
+    header_style = ParagraphStyle(
+        "header",
+        parent=styles["Normal"],
+        fontSize=8,
+        leading=11,
+        fontName="Helvetica-Bold",
+        alignment=TA_CENTER,
+        wordWrap="CJK",
+    )
 
-    story = []
+    # ── Helper ───────────────────────────────────────────────────────────────
+    def fmt_range(start, end):
+        """Format page range as 'A1 — A2' or single value 'B'."""
+        if start is None:
+            return ""
+        start_str = str(start)
+        if end is not None and end != start:
+            return f"{start_str} \u2014 {end}"  # em dash
+        return start_str
 
-    # Header
-    story.append(Paragraph("INDEX", title_style))
-    story.append(Paragraph(f"{paper_book['title']}", subtitle_style))
-    story.append(Paragraph(f"Forum: {paper_book['forum']} | Type: {paper_book['application_type']}", subtitle_style))
-    story.append(Spacer(1, 0.3 * cm))
+    # ── Column widths ────────────────────────────────────────────────────────
+    # Sl.No | Particulars | Part 1 | Part II | Remarks
+    col_widths = [1.2 * cm, 9.5 * cm, 2.8 * cm, 2.8 * cm, 2.5 * cm]
 
-    # Table headers
-    col_headers = [
-        Paragraph("<b>Sl.No</b>", cell_style),
-        Paragraph("<b>Particulars of Document</b>", cell_style),
-        Paragraph("<b>Part 1\n(Contents of Paper Book)\nPage No.</b>", cell_style),
-        Paragraph("<b>Contents of File Alone\nPage No.</b>", cell_style),
-        Paragraph("<b>Remarks</b>", cell_style),
+    # ── Row 1: Merged header labels ──────────────────────────────────────────
+    # ReportLab SPAN merges are defined in TableStyle.
+    # We use empty strings for spanned cells.
+    row1 = [
+        Paragraph("Sl.no", header_style),
+        Paragraph("Particulars of Document", header_style),
+        Paragraph("Page No. of part to which it belongs", header_style),
+        "",  # spanned by Part 1/Part II header above
+        Paragraph("Remarks", header_style),
     ]
 
-    table_data = [col_headers]
+    # ── Row 2: Sub-headers for Part 1 and Part II ────────────────────────────
+    row2 = [
+        "",
+        "",
+        Paragraph("Part 1\n(Contents of\nPaper Book)", header_style),
+        Paragraph("Part II\n(Contents of\nfile alone)", header_style),
+        "",
+    ]
 
+    # ── Row 3: Roman numeral labels ──────────────────────────────────────────
+    row3 = [
+        Paragraph("i", cell_center_style),
+        Paragraph("ii", cell_center_style),
+        Paragraph("iii", cell_center_style),
+        Paragraph("iv", cell_center_style),
+        Paragraph("v", cell_center_style),
+    ]
+
+    table_data = [row1, row2, row3]
+
+    # ── Data rows ────────────────────────────────────────────────────────────
     for row in index_rows:
-        # Page range strings
-        def fmt_range(start, end):
-            if start is None:
-                return ""
-            if end and end != start:
-                return f"{start} – {end}"
-            return str(start)
-
         part1 = fmt_range(row.get("page_start_part1"), row.get("page_end_part1"))
         part2 = fmt_range(row.get("page_start_part2"), row.get("page_end_part2"))
 
+        # Particulars: bold main title + optional remarks as sub-text
+        particulars_text = f"<b>{row.get('particulars', '')}</b>"
+        if row.get("remarks"):
+            particulars_text += f"<br/><font size='7'>{row['remarks']}</font>"
+
         table_data.append([
-            Paragraph(str(row.get("sl_no") or ""), cell_style),
-            Paragraph(row.get("particulars", ""), cell_style),
-            Paragraph(part1, cell_style),
-            Paragraph(part2, cell_style),
-            Paragraph(row.get("remarks") or "", cell_style),
+            Paragraph(str(row.get("sl_no") or ""), cell_center_style),
+            Paragraph(particulars_text, cell_style),
+            Paragraph(part1, cell_center_style),
+            Paragraph(part2, cell_center_style),
+            Paragraph("", cell_style),  # remarks column left blank (already in particulars)
         ])
 
-    col_widths = [1.5 * cm, 9 * cm, 3 * cm, 3 * cm, 2.5 * cm]
-    table = Table(table_data, colWidths=col_widths, repeatRows=1)
+    # ── Build table ──────────────────────────────────────────────────────────
+    table = Table(table_data, colWidths=col_widths, repeatRows=3)
     table.setStyle(TableStyle([
-        ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F5F5F5")),
-        ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
-        ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+        # Grid for entire table
+        ("GRID", (0, 0), (-1, -1), 0.5, colors.black),
+
+        # Header background (rows 0 and 1)
+        ("BACKGROUND", (0, 0), (-1, 1), colors.white),
+
+        # Vertical alignment top for all
         ("VALIGN", (0, 0), (-1, -1), "TOP"),
-        ("ROWBACKGROUNDS", (0, 1), (-1, -1), [colors.white, colors.HexColor("#F5F5F5")]),
-        ("TOPPADDING", (0, 0), (-1, -1), 4),
-        ("BOTTOMPADDING", (0, 0), (-1, -1), 4),
+
+        # Center align Sl.No column
+        ("ALIGN", (0, 0), (0, -1), "CENTER"),
+
+        # Center align Part 1 and Part II columns
+        ("ALIGN", (2, 0), (3, -1), "CENTER"),
+
+        # SPAN: "Page No. of part to which it belongs" spans col 2 and 3 in row 0
+        ("SPAN", (2, 0), (3, 0)),
+
+        # SPAN: Sl.no spans rows 0 and 1
+        ("SPAN", (0, 0), (0, 1)),
+
+        # SPAN: Particulars of Document spans rows 0 and 1
+        ("SPAN", (1, 0), (1, 1)),
+
+        # SPAN: Remarks spans rows 0 and 1
+        ("SPAN", (4, 0), (4, 1)),
+
+        # Padding
+        ("TOPPADDING", (0, 0), (-1, -1), 5),
+        ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
         ("LEFTPADDING", (0, 0), (-1, -1), 4),
         ("RIGHTPADDING", (0, 0), (-1, -1), 4),
+
+        # Light grey background for roman numeral row
+        ("BACKGROUND", (0, 2), (-1, 2), colors.HexColor("#F5F5F5")),
     ]))
 
-    story.append(table)
+    story = [table]
     doc.build(story)
     return buf.getvalue()
 
