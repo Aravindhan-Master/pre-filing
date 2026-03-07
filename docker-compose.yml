@@ -12,6 +12,11 @@ services:
       - "traefik.http.routers.pre-filing.tls.certresolver=myresolver"
       - "traefik.http.routers.pre-filing.middlewares=pre-filing-strip"
       - "traefik.http.middlewares.pre-filing-strip.stripprefix.prefixes=/v1/paper-books"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; r = urllib.request.urlopen('http://localhost:8000/health'); exit(0 if r.status == 200 else 1)"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
     networks:
       - shared-network
 
