@@ -7,9 +7,11 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.http.routers.pre-filing.entrypoints=websecure"
-      - "traefik.http.routers.pre-filing.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.pre-filing.rule=Host(`${APP_HOST}`) && PathPrefix(`/v1/paper-book`)"
       - "traefik.http.routers.pre-filing.tls=true"
       - "traefik.http.routers.pre-filing.tls.certresolver=myresolver"
+      - "traefik.http.routers.pre-filing.middlewares=pre-filing-strip"
+      - "traefik.http.middlewares.pre-filing-strip.stripprefix.prefixes=/v1/paper-book"
     networks:
       - traefik-public
 
