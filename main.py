@@ -38,7 +38,8 @@ def create_app() -> FastAPI:
         middleware=include_middleware(),
     )
 
-    app.include_router(api_router)
+    router_prefix = "/v1/paper-book" if config.ENVIRONMENT != "production" else ""
+    app.include_router(api_router, prefix=router_prefix)
 
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(CustomException, custom_exception_handler)
