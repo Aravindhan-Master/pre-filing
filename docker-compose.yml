@@ -1,0 +1,18 @@
+services:
+  pre-filing-api:
+    build: .
+    restart: unless-stopped
+    env_file:
+      - .env
+    labels:
+      - "traefik.enable=true"
+      - "traefik.http.routers.pre-filing.entrypoints=websecure"
+      - "traefik.http.routers.pre-filing.rule=Host(`${APP_HOST}`)"
+      - "traefik.http.routers.pre-filing.tls=true"
+      - "traefik.http.routers.pre-filing.tls.certresolver=myresolver"
+    networks:
+      - traefik-public
+
+networks:
+  traefik-public:
+    external: true
