@@ -44,6 +44,11 @@ def create_app() -> FastAPI:
     app.add_exception_handler(RequestValidationError, validation_exception_handler)
     app.add_exception_handler(CustomException, custom_exception_handler)
 
+    @app.get("/")
+    async def health():
+        """Health check endpoint. Returns the application name."""
+        return {"app_name": "prefiling"}
+
     return app
 
 
